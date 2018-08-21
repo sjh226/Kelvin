@@ -18,6 +18,7 @@ def well_pull():
 	cursor = connection.cursor()
 	SQLCommand = ("""
 		DROP TABLE IF EXISTS #Normal
+		DROP TABLE IF EXISTS #Plunger
 
 		SELECT	P.Wellkey
 				,W.API
@@ -28,18 +29,18 @@ def well_pull():
 				,DP.AllocatedWater
 				,P.LastChokeEntry
 				,P.LastChokeStatus
-				,ROW_NUMBER() OVER (PARTITION BY DP.API ORDER BY DP.DateKey DESC) AS RowNum
-		  INTO #Normal
-		  FROM [Business].[Operations].[DailyProduction] DP
-		  JOIN [OperationsDataMart].[Dimensions].[Wells] W
-			ON W.WellFlac = DP.WellFlac
-		  JOIN [OperationsDataMart].[Facts].[Production] P
-			ON P.Wellkey = W.Wellkey
-			AND P.DateKey = DP.DateKey
-		  WHERE DP.AllocatedGas > 0
-			AND DP.AllocatedOil > 0
-			AND DP.AllocatedWater > 0
-			AND P.LastChokeStatus = 'Normal Operations'
+			INTO #Normal
+			FROM [Business].[Operations].[DailyProduction] DP
+			JOIN [OperationsDataMart].[Dimensions].[Wells] W
+			  ON W.WellFlac = DP.WellFlac
+			JOIN [OperationsDataMart].[Facts].[Production] P
+			  ON P.Wellkey = W.Wellkey
+			  AND P.DateKey = DP.DateKey
+			WHERE P.LastChokeStatus = 'Normal Operations'
+			  AND DP.DateKey >= DATEADD(year, -2, GETDATE())
+			  --AND DP.AllocatedGas > 0
+			  --AND DP.AllocatedOil > 0
+			  --AND DP.AllocatedWater > 0
 	""")
 
 	cursor.execute(SQLCommand)
@@ -48,10 +49,18 @@ def well_pull():
 		SELECT DISTINCT N.API
 						,N.Wellkey
 						,N.BusinessUnit
-						,AV.AvgGas
+						,CASE WHEN AvGas.AvgGas IS NOT NULL
+							  THEN AvGas.AvgGas
+							  ELSE 0 END AS AvgGas
 						,CASE WHEN N.BusinessUnit = 'North'
 								THEN (LG.Weighted_OilGasRatio + LG.Weighted_WaterGasRatio)
-								ELSE N.LGR END AS LGR
+								ELSE ((CASE WHEN AvOil.AvgOil IS NOT NULL
+											  THEN AvOil.AvgOil
+											  ELSE 0 END + CASE WHEN AvWat.AvgWater IS NOT NULL
+																  THEN AvWat.AvgWater
+																  ELSE 0 END) / CASE WHEN AvGas.AvgGas IS NOT NULL
+																				  THEN AvGas.AvgGas
+																				  ELSE 0 END) END AS LGR
 						,CASE WHEN PT.plungerType LIKE '%Stock%' OR PT.plungerType LIKE '%stock%' OR
 									PT.plungerType LIKE '%Cleanout%' OR PT.plungerType LIKE '%Snake%' OR
 									PT.plungerType LIKE '%Venturi%' OR PT.plungerType LIKE '%Viper%' OR PT.plungerType LIKE '%Vortex%'
@@ -67,18 +76,31 @@ def well_pull():
 								WHEN PT.plungerType IS NULL
 								THEN NULL
 								ELSE 'Padded' END AS PlungerType
+			INTO #Plunger
 			FROM (SELECT	API
 						,Wellkey
 						,BusinessUnit
-						,(AVG(AllocatedOil) + AVG(AllocatedWater)) / AVG(AllocatedGas) AS LGR
+						--,(AVG(AllocatedOil) + AVG(AllocatedWater)) / AVG(AllocatedGas) AS LGR
 					FROM #Normal
 					GROUP BY API, Wellkey, BusinessUnit) N
-			JOIN (SELECT  API
+			LEFT OUTER JOIN (SELECT  API
 						,AVG(AllocatedGas) AS AvgGas
-						,AVG(AllocatedOil) AS AvgOil
 					FROM #Normal
-					GROUP BY API) AV
-			ON AV.API = N.API
+					WHERE AllocatedGas > 0
+					GROUP BY API) AvGas
+			  ON AvGas.API = N.API
+			LEFT OUTER JOIN (SELECT	API
+									,AVG(AllocatedOil) AS AvgOil
+							FROM #Normal
+							WHERE AllocatedOil > 0
+							GROUP BY API) AvOil
+			  ON AvOil.API = N.API
+			LEFT OUTER JOIN (SELECT  API
+						,AVG(AllocatedWater) AS AvgWater
+				FROM #Normal
+				WHERE AllocatedWater > 0
+				GROUP BY API) AvWat
+			  ON AvWat.API = N.API
 			LEFT OUTER JOIN [TeamOptimizationEngineering].[dbo].[NorthLGR4] LG
 			ON LG.WellKey = N.Wellkey
 			LEFT OUTER JOIN (SELECT	A.apiNumber
