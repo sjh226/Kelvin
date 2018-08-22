@@ -21,6 +21,7 @@ def well_pull():
 		DROP TABLE IF EXISTS #Plunger
 
 		SELECT	P.Wellkey
+				,DP.WellFlac
 				,W.API
 				,DP.BusinessUnit
 				,DP.DateKey
@@ -48,6 +49,7 @@ def well_pull():
 	SQLCommand = ("""
 		SELECT DISTINCT N.API
 						,N.Wellkey
+						,N.WellFlac
 						,N.BusinessUnit
 						,CASE WHEN AvGas.AvgGas IS NOT NULL
 							  THEN AvGas.AvgGas
@@ -60,7 +62,7 @@ def well_pull():
 																  THEN AvWat.AvgWater
 																  ELSE 0 END) / CASE WHEN AvGas.AvgGas IS NOT NULL
 																				  THEN AvGas.AvgGas
-																				  ELSE 0 END) END AS LGR
+																				  ELSE NULL END) END AS LGR
 						,CASE WHEN PT.plungerType LIKE '%Stock%' OR PT.plungerType LIKE '%stock%' OR
 									PT.plungerType LIKE '%Cleanout%' OR PT.plungerType LIKE '%Snake%' OR
 									PT.plungerType LIKE '%Venturi%' OR PT.plungerType LIKE '%Viper%' OR PT.plungerType LIKE '%Vortex%'
@@ -76,13 +78,14 @@ def well_pull():
 								WHEN PT.plungerType IS NULL
 								THEN NULL
 								ELSE 'Padded' END AS PlungerType
-			INTO #Plunger
+			--INTO #Plunger
 			FROM (SELECT	API
 						,Wellkey
+						,WellFlac
 						,BusinessUnit
 						--,(AVG(AllocatedOil) + AVG(AllocatedWater)) / AVG(AllocatedGas) AS LGR
 					FROM #Normal
-					GROUP BY API, Wellkey, BusinessUnit) N
+					GROUP BY API, Wellkey, BusinessUnit, WellFlac) N
 			LEFT OUTER JOIN (SELECT  API
 						,AVG(AllocatedGas) AS AvgGas
 					FROM #Normal
@@ -148,9 +151,21 @@ def kelvin_api(val):
 	else:
 		return val
 
-def cluster():
-	pass
+def cluster(df):
+	north_df = df.loc[df['BusinessUnit'] == 'North', :]
+	west_df = df.loc[df['BusinessUnit'] == 'West', :]
+	midcon_df = df.loc[df['BusinessUnit'] == 'Midcon', :]
 
+	north_lgr = [sorted(north_df['LGR'].values)[round(len(north_df['LGR'].values)/3)],
+				 sorted(north_df['LGR'].values)[round((len(north_df['LGR'].values)/3) * 2)]]
+
+	def north_lgr_logic(row):
+		if row['LGR'] < north_lgr.min():
+			return 1
+		elif row['LGR'] >= north_lgr.max():
+			return 3
+		else:
+			return 2
 
 if __name__ == '__main__':
 	all_df = well_pull()
@@ -158,6 +173,7 @@ if __name__ == '__main__':
 	kelvin_df['API'] = kelvin_df['API'].apply(kelvin_api)
 
 	k_df = pd.merge(kelvin_df, all_df, on='API', how='left')
+	k_df.loc[:,'WellFlac'] = pd.to_numeric(k_df.loc[:,'WellFlac'], errors='coerce')
 
 	compressor_df = pd.read_csv('data/west_compressors.csv', encoding='ISO-8859-1')
 	comp_df = compressor_df[[' WellFlac ', ' Compressor Manufacturer ']]
@@ -166,4 +182,9 @@ if __name__ == '__main__':
 
 	comp_df.loc[:,'Comp'] = np.where(comp_df.loc[:,'Comp'].notnull(), 1, 0)
 
-	df = pf.merge(k_df, comp)
+	df = pd.merge(k_df, comp_df, on='WellFlac', how='left')
+	df.drop_duplicates(inplace=True)
+	df = df.loc[(df['BusinessUnit'] == 'West') |
+				((df['BusinessUnit'] != 'West') & (df['Comp'].isnull())), :]
+
+	cluster(df)
