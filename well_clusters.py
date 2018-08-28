@@ -186,5 +186,5 @@ if __name__ == '__main__':
 	df.drop_duplicates(inplace=True)
 	df = df.loc[(df['BusinessUnit'] == 'West') |
 				((df['BusinessUnit'] != 'West') & (df['Comp'].isnull())), :]
-
+	df.to_csv('data/kelvin_wells.csv')
 	cluster(df)
