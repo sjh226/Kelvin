@@ -3,6 +3,8 @@ import numpy as np
 import pyodbc
 import sys
 import matplotlib.pyplot as plt
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import StandardScaler
 
 
 def normal_pull():
@@ -120,23 +122,42 @@ def data_pull():
 
 def anomaly(df):
 	df.sort_values('DateKey', inplace=True)
+	df.loc[:, 'DateKey'] = pd.to_datetime(df.loc[:, 'DateKey'])
 
-	df.loc[:, 'rolling'] = df.loc[:, 'LinePressure'].rolling(21, center=False).mean()
-	df.loc[:, 'rolling_std'] = df.loc[:, 'LinePressure'].rolling(21, center=False).std()
-	df.loc[:, 'rolling_gas'] = df.loc[:, 'AllocatedGas'].rolling(21, center=False).mean()
+	df.loc[:, 'rolling'] = df.loc[:, 'LinePressure'].rolling(4, center=False).mean()
+	df.loc[:, 'rolling_std'] = df.loc[:, 'LinePressure'].rolling(4, center=False).std()
+	df.loc[:, 'rolling_gas'] = df.loc[:, 'AllocatedGas'].rolling(4, center=False).mean()
 
 	X = df['rolling_std'].values
 	X_1 = df['rolling'].values
 	X_gas = df['rolling_gas'].values
 
-	print(X)
-
 	y_pred = np.ones(X.shape)
-	y_pred[X > 15] = 0
+	y_pred[X > 35] = 0
 
-	plot_it(X, X_1, X_gas, y_pred, df['API'].unique()[0])
+	pressure_vals = df.loc[:, 'LinePressure'].values.reshape(-1, 1)
+	X_pred = linear(df.loc[:, 'DateKey'].astype('int64').reshape(-1, 1),
+					pressure_vals)
+	std = np.std(df.loc[:, 'LinePressure'].values)
+	upper = (X_pred + (1.96 * std)).reshape(-1, 1)
+	lower = (X_pred - (1.96 * std)).reshape(-1, 1)
 
-def plot_it(X, X_1, X_gas, y_pred, api):
+	out_pressure = (pressure_vals > upper).astype(int) + (pressure_vals < lower).astype(int)
+
+	plot_it(X, X_1, X_gas, y_pred, out_pressure, df['API'].unique()[0])
+
+def linear(X, y):
+	scaler = StandardScaler().fit(X, y)
+
+	X_scale = scaler.transform(X)
+
+	lr = LinearRegression()
+	lr.fit(X, y)
+
+	return lr.predict(X).flatten()
+
+
+def plot_it(X, X_1, X_gas, y_pred, flagged, api):
 	plt.close()
 
 	fig, ax = plt.subplots()
@@ -144,11 +165,12 @@ def plot_it(X, X_1, X_gas, y_pred, api):
 	ax.plot(X_gas, label='Gas', color='black')
 	for i in range(0, len(X)):
 		ax.axvspan(i, i+1, color='red', alpha=((y_pred[i]-1)*-1)/4)
+	ax.plot(flagged * 100, 'xb')
 	plt.ylabel('Line Pressure (PSI)')
 	plt.xlabel('Day')
 	plt.legend()
 	plt.title('{} 14 day rolling'.format(api))
-	plt.savefig('figures/{}_14rolling_10.png'.format(api))
+	plt.savefig('figures/{}_14rolling.png'.format(api))
 
 
 if __name__ == '__main__':
@@ -158,6 +180,6 @@ if __name__ == '__main__':
 
 	apis = sorted(df['API'].unique())
 
-	for api in apis[:3]:
+	for api in apis[:1]:
 		anomaly(df.loc[df['API'] == api, ['API', 'DateKey', 'LinePressure',
 										  'AllocatedGas']])
