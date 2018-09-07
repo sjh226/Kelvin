@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler, PolynomialFeatures
+from sklearn.neural_network import MLPRegressor
 
 
 def normal_pull():
@@ -88,6 +89,7 @@ def data_pull():
 	cursor = connection.cursor()
 	SQLCommand = ("""
 		SELECT	P.Wellkey
+				,DP.WellFlac
 				,DP.API10 AS API
 				,DP.DateKey
 				,P.LinePressure
@@ -137,7 +139,7 @@ def anomaly(df):
 	y_pred[X > 35] = 0
 
 	pressure_vals = df.loc[:, 'LinePressure'].values.reshape(-1, 1)
-	X_pred = linear(df.loc[:, 'DateKey'].astype('int64').reshape(-1, 1),
+	X_pred = linear(df.loc[:, 'DateKey'].astype('int64').values.reshape(-1, 1),
 					pressure_vals)
 	std = np.std(df.loc[:, 'LinePressure'].values)
 	upper = (X_pred + (1.96 * std)).reshape(-1, 1)
@@ -146,7 +148,9 @@ def anomaly(df):
 	out_pressure = (pressure_vals > upper).astype(int) + (pressure_vals < lower).astype(int)
 
 	plot_linear(df, X_pred, upper, lower, df['API'].unique()[0])
-	# plot_it(X, X_1, X_gas, y_pred, df['API'].unique()[0])
+	plot_it(X, X_1, X_gas, y_pred, df['API'].unique()[0])
+
+	# neural_net(df)
 
 def linear(X, y):
 	scaler = StandardScaler().fit(X, y)
@@ -170,12 +174,25 @@ def plot_linear(df, line, upper, lower, api):
 
 	std = np.std(df.loc[df['LinePressure'] > 0, 'LinePressure'].values)
 	med = df.loc[df['LinePressure'] > 0, 'LinePressure'].median()
-	upper = med + std
-	lower = med - std
+	upper = med + std * .5
+	lower = med - std * .5
 
-	ax.plot(df['DateKey'], df['LinePressure'], color='black')
-	ax.plot(df['DateKey'], df['AllocatedGas'])
-	# ax.plot(df['DateKey'], line, color='r', linestyle='--')
+	ax.plot(df['DateKey'], df['LinePressure'], color='black', linestyle='--', alpha=.3)
+	ax.plot(df.loc[(df['LinePressure'] <= upper) & (df['LinePressure'] >= lower), 'DateKey'],
+			df.loc[(df['LinePressure'] <= upper) & (df['LinePressure'] >= lower),'LinePressure'],
+			color='black')
+	ax.plot(df['DateKey'], df['AllocatedGas'], color='#4286f4', linestyle='--', alpha=.3)
+	ax.plot(df.loc[(df['LinePressure'] <= upper) & (df['LinePressure'] >= lower), 'DateKey'],
+			df.loc[(df['LinePressure'] <= upper) & (df['LinePressure'] >= lower),'AllocatedGas'],
+			color='#42d9f4')
+
+	# df.loc[:, 'flag_up'] = (df.loc[:, 'LinePressure'] > upper).astype(int)
+	# df.loc[:, 'flag_down'] = (df.loc[:, 'LinePressure'] < lower).astype(int)
+	# df.loc[:, 'flag'] = df.loc[:, ['flag_up', 'flag_down']].sum(axis=1)
+	#
+	# for i in range(0, len(df['DateKey'].values)):
+	# 	ax.axvspan(i, i+1, color='red', alpha=df.loc[:, 'flag'].values[i]/4)
+
 	ax.axhline(upper, color='b', linestyle='--')
 	ax.axhline(lower, color='b', linestyle='--')
 	ax.axhline(med, color='r')
@@ -197,17 +214,51 @@ def plot_it(X, X_1, X_gas, y_pred, api):
 	plt.title('{} 14 day rolling'.format(api))
 	plt.savefig('figures/{}_14rolling.png'.format(api))
 
-def model(df):
-	pass
+def neural_net(df):
+	df.sort_values('DateKey', inplace=True)
+	df.loc[:, 'line_sq'] = df.loc[:, 'LinePressure'] ** 2
+	df.loc[:, 'line_cu'] = df.loc[:, 'LinePressure'] ** 3
+	df.loc[:, 'rolling'] = df.loc[:, 'LinePressure'].rolling(4, center=False).mean()
+	df.loc[:, 'rolling_std'] = df.loc[:, 'LinePressure'].rolling(4, center=False).std()
 
+	df = delta(df)
+	df.fillna(0, inplace=True)
+	# df.loc[:, 'line_change'] = df.loc[:, 'LinePressure'] - df.loc[:, 'LinePressure'].shift(1)
+	# df.loc[:, 'line_change'].fillna(0, inplace=True)
+
+	y = df['AllocatedGas']
+	X = df[['LinePressure', 'rolling', 'rolling_std', 'line_sq', 'line_cu',
+			'line_change']]
+
+	mlp = MLPRegressor()
+	mlp.fit(X, y)
+
+	print('Score: {}'.format(mlp.score(X, y)))
+
+def delta(df):
+	return_df = pd.DataFrame(columns=df.columns)
+
+	for api in df['API'].unique():
+		well_df = df.loc[df['API'] == api]
+		well_df.loc[:, 'line_change'] = well_df.loc[:, 'LinePressure'] - \
+										well_df.loc[:, 'LinePressure'].shift(1)
+		well_df.loc[:, 'line_change'].fillna(0, inplace=True)
+		return_df = return_df.append(well_df)
+
+	return return_df
 
 if __name__ == '__main__':
 	# df = data_pull()
 	# df.to_csv('data/line_pressure.csv')
 	df = pd.read_csv('data/line_pressure.csv')
 
-	apis = sorted(df['API'].unique())
+	flacs = pd.read_csv('data/kelvin_wellflacs.csv', header=None).values.flatten()
+	kelvin_df = df.loc[df['WellFlac'].isin(flacs), :]
+
+	# neural_net(df)
+
+	apis = sorted(kelvin_df['API'].unique())
 
 	for api in apis[:10]:
-		anomaly(df.loc[df['API'] == api, ['API', 'DateKey', 'LinePressure',
+		anomaly(kelvin_df.loc[kelvin_df['API'] == api, ['API', 'DateKey', 'LinePressure',
 										  'AllocatedGas']])
