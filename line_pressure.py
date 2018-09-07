@@ -89,6 +89,7 @@ def data_pull():
 	cursor = connection.cursor()
 	SQLCommand = ("""
 		SELECT	P.Wellkey
+				,DP.WellFlac
 				,DP.API10 AS API
 				,DP.DateKey
 				,P.LinePressure
@@ -138,7 +139,7 @@ def anomaly(df):
 	y_pred[X > 35] = 0
 
 	pressure_vals = df.loc[:, 'LinePressure'].values.reshape(-1, 1)
-	X_pred = linear(df.loc[:, 'DateKey'].astype('int64').reshape(-1, 1),
+	X_pred = linear(df.loc[:, 'DateKey'].astype('int64').values.reshape(-1, 1),
 					pressure_vals)
 	std = np.std(df.loc[:, 'LinePressure'].values)
 	upper = (X_pred + (1.96 * std)).reshape(-1, 1)
@@ -147,7 +148,7 @@ def anomaly(df):
 	out_pressure = (pressure_vals > upper).astype(int) + (pressure_vals < lower).astype(int)
 
 	plot_linear(df, X_pred, upper, lower, df['API'].unique()[0])
-	# plot_it(X, X_1, X_gas, y_pred, df['API'].unique()[0])
+	plot_it(X, X_1, X_gas, y_pred, df['API'].unique()[0])
 
 	# neural_net(df)
 
@@ -184,6 +185,14 @@ def plot_linear(df, line, upper, lower, api):
 	ax.plot(df.loc[(df['LinePressure'] <= upper) & (df['LinePressure'] >= lower), 'DateKey'],
 			df.loc[(df['LinePressure'] <= upper) & (df['LinePressure'] >= lower),'AllocatedGas'],
 			color='#42d9f4')
+
+	# df.loc[:, 'flag_up'] = (df.loc[:, 'LinePressure'] > upper).astype(int)
+	# df.loc[:, 'flag_down'] = (df.loc[:, 'LinePressure'] < lower).astype(int)
+	# df.loc[:, 'flag'] = df.loc[:, ['flag_up', 'flag_down']].sum(axis=1)
+	#
+	# for i in range(0, len(df['DateKey'].values)):
+	# 	ax.axvspan(i, i+1, color='red', alpha=df.loc[:, 'flag'].values[i]/4)
+
 	ax.axhline(upper, color='b', linestyle='--')
 	ax.axhline(lower, color='b', linestyle='--')
 	ax.axhline(med, color='r')
@@ -243,10 +252,13 @@ if __name__ == '__main__':
 	# df.to_csv('data/line_pressure.csv')
 	df = pd.read_csv('data/line_pressure.csv')
 
+	flacs = pd.read_csv('data/kelvin_wellflacs.csv', header=None).values.flatten()
+	kelvin_df = df.loc[df['WellFlac'].isin(flacs), :]
+
 	# neural_net(df)
 
-	apis = sorted(df['API'].unique())
+	apis = sorted(kelvin_df['API'].unique())
 
 	for api in apis[:10]:
-		anomaly(df.loc[df['API'] == api, ['API', 'DateKey', 'LinePressure',
+		anomaly(kelvin_df.loc[kelvin_df['API'] == api, ['API', 'DateKey', 'LinePressure',
 										  'AllocatedGas']])
