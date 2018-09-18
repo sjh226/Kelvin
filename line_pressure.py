@@ -5,8 +5,10 @@ import sys
 import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression
 from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import StandardScaler, PolynomialFeatures
+from sklearn.preprocessing import StandardScaler, PolynomialFeatures, normalize
 from sklearn.neural_network import MLPRegressor
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split
 
 
 def normal_pull():
@@ -141,16 +143,77 @@ def anomaly(df):
 	pressure_vals = df.loc[:, 'LinePressure'].values.reshape(-1, 1)
 	X_pred = linear(df.loc[:, 'DateKey'].astype('int64').values.reshape(-1, 1),
 					pressure_vals)
-	std = np.std(df.loc[:, 'LinePressure'].values)
-	upper = (X_pred + (1.96 * std)).reshape(-1, 1)
-	lower = (X_pred - (1.96 * std)).reshape(-1, 1)
+	# std = np.std(df.loc[:, 'LinePressure'].values)
+	# upper = (X_pred + (1.96 * std)).reshape(-1, 1)
+	# lower = (X_pred - (1.96 * std)).reshape(-1, 1)
+
+	std = np.std(df.loc[df['LinePressure'] > 0, 'LinePressure'].values)
+	med = df.loc[df['LinePressure'] > 0, 'LinePressure'].median()
+	upper = med + std * .5
+	lower = med - std * .5
+
+	df['spike'] = np.where((df['LinePressure'] > upper) |
+						   (df['LinePressure'] < lower), 1, 0)
+	df['3_spike'] = np.where((((df['spike'] == df['spike'].shift(1)) &
+							   (df['spike'] == df['spike'].shift(2))) |
+							  ((df['spike'] == df['spike'].shift(-1)) &
+						  	   (df['spike'] == df['spike'].shift(-2))) |
+							  ((df['spike'] == df['spike'].shift(1)) &
+						  	   (df['spike'] == df['spike'].shift(-1)))) &
+							  df['spike'] == 1, 1, 0)
+
+	df['5_spike'] = np.where((((df['spike'] == df['spike'].shift(-4)) &
+							   (df['spike'] == df['spike'].shift(-3)) &
+							   (df['spike'] == df['spike'].shift(-2)) &
+							   (df['spike'] == df['spike'].shift(-1))) |
+							  ((df['spike'] == df['spike'].shift(-3)) &
+  							   (df['spike'] == df['spike'].shift(-2)) &
+  							   (df['spike'] == df['spike'].shift(-1)) &
+  							   (df['spike'] == df['spike'].shift(1))) |
+							  ((df['spike'] == df['spike'].shift(-2)) &
+  							   (df['spike'] == df['spike'].shift(-1)) &
+  							   (df['spike'] == df['spike'].shift(1)) &
+  							   (df['spike'] == df['spike'].shift(2))) |
+							  ((df['spike'] == df['spike'].shift(-1)) &
+  							   (df['spike'] == df['spike'].shift(1)) &
+  							   (df['spike'] == df['spike'].shift(2)) &
+  							   (df['spike'] == df['spike'].shift(3))) |
+							  ((df['spike'] == df['spike'].shift(1)) &
+  							   (df['spike'] == df['spike'].shift(2)) &
+  							   (df['spike'] == df['spike'].shift(3)) &
+  							   (df['spike'] == df['spike'].shift(4)))) &
+							  df['spike'] == 1, 1, 0)
 
 	out_pressure = (pressure_vals > upper).astype(int) + (pressure_vals < lower).astype(int)
 
-	plot_linear(df, X_pred, upper, lower, df['API'].unique()[0])
-	plot_it(X, X_1, X_gas, y_pred, df['API'].unique()[0])
+	df.loc[:, 'press_norm'] = normalize(df['LinePressure'].values.reshape(-1, 1))
+	df.loc[:, 'gas_norm'] = normalize(df['AllocatedGas'].values.reshape(-1, 1))
 
-	# neural_net(df)
+	# plot_linear(df, X_pred, upper, lower, df['API'].unique()[0])
+	# plot_it(df, X, X_1, X_gas, y_pred, df['API'].unique()[0])
+
+	# rf_regressor(df.loc[df['5_spike'] == 1, :])
+
+	return df
+
+# June 11th - 22nd
+# Normalize each well, then run regression on the whole set
+
+def rf_regressor(df):
+	X = df['press_norm'].values.reshape(-1, 1)
+	# X_norm = normalize(X)
+	y = df['gas_norm'].values.reshape(-1, 1)
+	# y_norm = normalize(y)
+
+	X_train, X_test, y_train, y_test = train_test_split(X, y,
+														test_size=0.2,
+														random_state=13)
+
+	rf = RandomForestRegressor()
+
+	rf.fit(X_train, y_train)
+	print('Score')
+	print(rf.score(X_test, y_test))
 
 def linear(X, y):
 	scaler = StandardScaler().fit(X, y)
@@ -199,7 +262,7 @@ def plot_linear(df, line, upper, lower, api):
 
 	plt.savefig('figures/{}_linear.png'.format(api))
 
-def plot_it(X, X_1, X_gas, y_pred, api):
+def plot_it(df, X, X_1, X_gas, y_pred, api):
 	plt.close()
 
 	fig, ax = plt.subplots()
@@ -258,7 +321,11 @@ if __name__ == '__main__':
 	# neural_net(df)
 
 	apis = sorted(kelvin_df['API'].unique())
+	spike_df = pd.DataFrame()
 
-	for api in apis[:10]:
-		anomaly(kelvin_df.loc[kelvin_df['API'] == api, ['API', 'DateKey', 'LinePressure',
-										  'AllocatedGas']])
+	for api in apis:
+		api_df = anomaly(kelvin_df.loc[kelvin_df['API'] == api,
+									  ['API', 'DateKey', 'LinePressure', 'AllocatedGas']])
+		spike_df = spike_df.append(api_df)
+
+	rf_regressor(spike_df.loc[spike_df['3_spike'] == 1, :])
