@@ -152,8 +152,8 @@ def anomaly(df):
 	upper = med + std * .5
 	lower = med - std * .5
 
-	df['spike'] = np.where((df['LinePressure'] > upper) |
-						   (df['LinePressure'] < lower), 1, 0)
+	df['spike'] = np.where((df['rolling'] > upper) |
+						   (df['rolling'] < lower), 1, 0)
 	df['3_spike'] = np.where((((df['spike'] == df['spike'].shift(1)) &
 							   (df['spike'] == df['spike'].shift(2))) |
 							  ((df['spike'] == df['spike'].shift(-1)) &
@@ -184,17 +184,45 @@ def anomaly(df):
   							   (df['spike'] == df['spike'].shift(4)))) &
 							  df['spike'] == 1, 1, 0)
 
+	df['spike_start'] = np.where((df['3_spike'] == 1) &
+								 ((df['3_spike'].shift(1) == 0) |
+								  (df['3_spike'].shift(1) == np.nan)),
+								 1, 0)
+
 	out_pressure = (pressure_vals > upper).astype(int) + (pressure_vals < lower).astype(int)
 
-	df.loc[:, 'press_norm'] = normalize(df['LinePressure'].values.reshape(-1, 1))
-	df.loc[:, 'gas_norm'] = normalize(df['AllocatedGas'].values.reshape(-1, 1))
+	df.loc[:, 'press_norm'] = normalize(df['LinePressure'].values.reshape(1, -1))[0]
+	df.loc[:, 'gas_norm'] = normalize(df['AllocatedGas'].values.reshape(1, -1))[0]
+
+	spike_df = pd.DataFrame(columns=['api', 'start_date', 'length', 'pre_prod',
+									 'deferment', 'avg_spike_prod'])
+	for idx, row in enumerate(df.iterrows()):
+		if idx != 0:
+			target_gas = df.iloc[idx-1]['AllocatedGas']
+			if row[1]['spike_start'] == 1:
+				spike_gas = []
+				for index, spike_row in enumerate(df.iloc[idx:].iterrows()):
+					if spike_row[1]['AllocatedGas'] >= target_gas:
+						break
+					else:
+						spike_gas.append(spike_row[1]['AllocatedGas'])
+				deferment = sum(np.array(spike_gas) - target_gas)
+
+				spike_df = spike_df.append(pd.DataFrame(
+										   np.array([row[1]['API'],
+										   			 row[1]['DateKey'], len(spike_gas),
+												     target_gas, abs(deferment),
+													 np.mean(spike_gas)]).reshape(1, -1),
+										   columns=['api', 'start_date', 'length',
+													'pre_prod', 'deferment',
+													'avg_spike_prod']))
 
 	# plot_linear(df, X_pred, upper, lower, df['API'].unique()[0])
 	# plot_it(df, X, X_1, X_gas, y_pred, df['API'].unique()[0])
 
 	# rf_regressor(df.loc[df['5_spike'] == 1, :])
 
-	return df
+	return df, spike_df
 
 # June 11th - 22nd
 # Normalize each well, then run regression on the whole set
@@ -233,21 +261,22 @@ def linear(X, y):
 
 def plot_linear(df, line, upper, lower, api):
 	plt.close()
-	fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+	fig, ax = plt.subplots()
 
 	std = np.std(df.loc[df['LinePressure'] > 0, 'LinePressure'].values)
 	med = df.loc[df['LinePressure'] > 0, 'LinePressure'].median()
 	upper = med + std * .5
 	lower = med - std * .5
 
-	ax.plot(df['DateKey'], df['LinePressure'], color='black', linestyle='--', alpha=.3)
-	ax.plot(df.loc[(df['LinePressure'] <= upper) & (df['LinePressure'] >= lower), 'DateKey'],
-			df.loc[(df['LinePressure'] <= upper) & (df['LinePressure'] >= lower),'LinePressure'],
-			color='black')
-	ax.plot(df['DateKey'], df['AllocatedGas'], color='#4286f4', linestyle='--', alpha=.3)
-	ax.plot(df.loc[(df['LinePressure'] <= upper) & (df['LinePressure'] >= lower), 'DateKey'],
-			df.loc[(df['LinePressure'] <= upper) & (df['LinePressure'] >= lower),'AllocatedGas'],
-			color='#42d9f4')
+	ax.plot(df['DateKey'], df['rolling'], color='black', linestyle='--', alpha=.3)
+	ax.plot(df.loc[(df['rolling'] <= upper) & (df['rolling'] >= lower), 'DateKey'],
+			df.loc[(df['rolling'] <= upper) & (df['rolling'] >= lower),'rolling'],
+			color='black', label='Line Pressure')
+	ax.plot(df['DateKey'], df['rolling_gas'], color='#42d9f4')
+	# linestyle='--', alpha=.3)
+	# ax.plot(df.loc[(df['LinePressure'] <= upper) & (df['LinePressure'] >= lower), 'DateKey'],
+	# 		df.loc[(df['LinePressure'] <= upper) & (df['LinePressure'] >= lower),'rolling_gas'],
+	# 		color='#42d9f4', label='Gas')
 
 	# df.loc[:, 'flag_up'] = (df.loc[:, 'LinePressure'] > upper).astype(int)
 	# df.loc[:, 'flag_down'] = (df.loc[:, 'LinePressure'] < lower).astype(int)
@@ -259,6 +288,9 @@ def plot_linear(df, line, upper, lower, api):
 	ax.axhline(upper, color='b', linestyle='--')
 	ax.axhline(lower, color='b', linestyle='--')
 	ax.axhline(med, color='r')
+
+	plt.legend()
+	plt.title('{} Linear STD'.format(api))
 
 	plt.savefig('figures/{}_linear.png'.format(api))
 
@@ -276,6 +308,18 @@ def plot_it(df, X, X_1, X_gas, y_pred, api):
 	plt.legend()
 	plt.title('{} 14 day rolling'.format(api))
 	plt.savefig('figures/{}_14rolling.png'.format(api))
+
+def plot_corr(df):
+	plt.close()
+
+	fig,  ax = plt.subplots()
+	ax.scatter(df['press_norm'], df['gas_norm'])
+
+	plt.ylabel('Normalized Gas')
+	plt.xlabel('Normalized Line Pressure')
+	plt.title('Correlation of Gas and Pressure During Spikes')
+
+	plt.savefig('figures/correlation.png')
 
 def neural_net(df):
 	df.sort_values('DateKey', inplace=True)
@@ -321,11 +365,14 @@ if __name__ == '__main__':
 	# neural_net(df)
 
 	apis = sorted(kelvin_df['API'].unique())
+	full_df = pd.DataFrame()
 	spike_df = pd.DataFrame()
 
 	for api in apis:
-		api_df = anomaly(kelvin_df.loc[kelvin_df['API'] == api,
+		api_df, api_spike = anomaly(kelvin_df.loc[kelvin_df['API'] == api,
 									  ['API', 'DateKey', 'LinePressure', 'AllocatedGas']])
-		spike_df = spike_df.append(api_df)
+		full_df = spike_df.append(api_df)
+		spike_df = spike_df.append(api_spike)
 
-	rf_regressor(spike_df.loc[spike_df['3_spike'] == 1, :])
+	# plot_corr(spike_df)
+	# rf_regressor(spike_df.loc[spike_df['3_spike'] == 1, :])
