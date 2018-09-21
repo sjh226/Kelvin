@@ -435,7 +435,7 @@ if __name__ == '__main__':
 	df = df.loc[(df['LinePressure'].notnull()) & (df['AllocatedGas'].notnull()), :]
 
 	flacs = pd.read_csv('data/kelvin_wellflacs.csv', header=None).values.flatten()
-	kelvin_df, non_kelvin_df = build_spike(flacs, df)
+	# kelvin_df, non_kelvin_df = build_spike(flacs, df)
 
 	kelvin_df.to_csv('data/kelvin_spike.csv')
 	non_kelvin_df.to_csv('data/non_kelvin_spike.csv')
@@ -453,6 +453,6 @@ if __name__ == '__main__':
 			   				 (kelvin_df['start_date'] < pd.Timestamp(2018, 2, 1)) &
 							 (kelvin_df['length'] < 100), :])
 
-	# plot_spike(spike_df.loc[(spike_df['avg_spike_prod'].notnull()) &
-	# 						(spike_df['start_date'] >= pd.Timestamp(2018, 2, 1)), :],
-	# 		   nonk_spike_df.loc[nonk_spike_df['avg_spike_prod'].notnull(), :])
+	plot_spike(kelvin_df.loc[(kelvin_df['avg_spike_prod'].notnull()) &
+							 (kelvin_df['start_date'] >= pd.Timestamp(2018, 2, 1)), :],
+			   non_kelvin_df.loc[non_kelvin_df['avg_spike_prod'].notnull(), :])
