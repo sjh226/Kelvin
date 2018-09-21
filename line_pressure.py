@@ -9,6 +9,7 @@ from sklearn.preprocessing import StandardScaler, PolynomialFeatures, normalize
 from sklearn.neural_network import MLPRegressor
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import r2_score
 
 
 def normal_pull():
@@ -152,8 +153,7 @@ def anomaly(df):
 	upper = med + std * .5
 	lower = med - std * .5
 
-	df['spike'] = np.where((df['rolling'] > upper) |
-						   (df['rolling'] < lower), 1, 0)
+	df['spike'] = np.where(df['rolling'] > upper, 1, 0)
 	df['3_spike'] = np.where((((df['spike'] == df['spike'].shift(1)) &
 							   (df['spike'] == df['spike'].shift(2))) |
 							  ((df['spike'] == df['spike'].shift(-1)) &
@@ -195,27 +195,35 @@ def anomaly(df):
 	df.loc[:, 'gas_norm'] = normalize(df['AllocatedGas'].values.reshape(1, -1))[0]
 
 	spike_df = pd.DataFrame(columns=['api', 'start_date', 'length', 'pre_prod',
-									 'deferment', 'avg_spike_prod'])
+									 'deferment', 'avg_spike_prod', 'daily_def',
+									 'norm_def'])
 	for idx, row in enumerate(df.iterrows()):
 		if idx != 0:
 			target_gas = df.iloc[idx-1]['AllocatedGas']
+			target_norm = df.iloc[idx-1]['gas_norm']
 			if row[1]['spike_start'] == 1:
 				spike_gas = []
+				spike_norm = []
 				for index, spike_row in enumerate(df.iloc[idx:].iterrows()):
 					if spike_row[1]['AllocatedGas'] >= target_gas:
 						break
 					else:
 						spike_gas.append(spike_row[1]['AllocatedGas'])
+						spike_norm.append(spike_row[1]['gas_norm'])
 				deferment = sum(np.array(spike_gas) - target_gas)
+				def_norm = sum(np.array(spike_norm) - target_norm)
 
 				spike_df = spike_df.append(pd.DataFrame(
 										   np.array([row[1]['API'],
 										   			 row[1]['DateKey'], len(spike_gas),
 												     target_gas, abs(deferment),
-													 np.mean(spike_gas)]).reshape(1, -1),
+													 np.mean(spike_gas),
+													 np.mean(abs(deferment)),
+													 np.mean(abs(def_norm))]).reshape(1, -1),
 										   columns=['api', 'start_date', 'length',
 													'pre_prod', 'deferment',
-													'avg_spike_prod']))
+													'avg_spike_prod', 'daily_def',
+													'norm_def']))
 
 	# plot_linear(df, X_pred, upper, lower, df['API'].unique()[0])
 	# plot_it(df, X, X_1, X_gas, y_pred, df['API'].unique()[0])
@@ -354,19 +362,14 @@ def delta(df):
 
 	return return_df
 
-if __name__ == '__main__':
-	# df = data_pull()
-	# df.to_csv('data/line_pressure.csv')
-	df = pd.read_csv('data/line_pressure.csv')
-
-	flacs = pd.read_csv('data/kelvin_wellflacs.csv', header=None).values.flatten()
+def build_spike(flacs, df):
 	kelvin_df = df.loc[df['WellFlac'].isin(flacs), :]
-
-	# neural_net(df)
+	non_kelvin_df = df.loc[~df['WellFlac'].isin(flacs), :]
 
 	apis = sorted(kelvin_df['API'].unique())
 	full_df = pd.DataFrame()
 	spike_df = pd.DataFrame()
+	nonk_spike_df = pd.DataFrame()
 
 	for api in apis:
 		api_df, api_spike = anomaly(kelvin_df.loc[kelvin_df['API'] == api,
@@ -374,5 +377,82 @@ if __name__ == '__main__':
 		full_df = spike_df.append(api_df)
 		spike_df = spike_df.append(api_spike)
 
+	for api in sorted(non_kelvin_df['API'].unique()):
+		api_df, api_spike = anomaly(non_kelvin_df.loc[non_kelvin_df['API'] == api,
+									  ['API', 'DateKey', 'LinePressure', 'AllocatedGas']])
+		full_df = spike_df.append(api_df)
+		nonk_spike_df = nonk_spike_df.append(api_spike)
+
+	spike_df.loc[:, 'length'] = spike_df.loc[:, 'length'].astype(float)
+	spike_df.loc[:, 'deferment'] = spike_df.loc[:, 'deferment'].astype(float)
+	spike_df.loc[:, 'daily_def'] = spike_df.loc[:, 'daily_def'].astype(float)
+	spike_df.loc[:, 'norm_def'] = spike_df.loc[:, 'norm_def'].astype(float)
+
+	nonk_spike_df.loc[:, 'length'] = nonk_spike_df.loc[:, 'length'].astype(float)
+	nonk_spike_df.loc[:, 'deferment'] = nonk_spike_df.loc[:, 'deferment'].astype(float)
+	nonk_spike_df.loc[:, 'daily_def'] = nonk_spike_df.loc[:, 'daily_def'].astype(float)
+	nonk_spike_df.loc[:, 'norm_def'] = nonk_spike_df.loc[:, 'norm_def'].astype(float)
+
+	return spike_df, nonk_spike_df
+
+
+def plot_spike(kelv_df, non_df):
+	plt.close()
+
+	fig, ax = plt.subplots(1, 1, figsize=(5, 5))
+
+	max_len = np.max([non_df['length'].max(), kelv_df['length'].max()])
+
+	ax.scatter(non_df['length'], non_df['norm_def'], s=5,
+			   color='#429bf4', label='Pre Kelvin')
+	non_fit = np.polyfit(non_df['length'].values, non_df['norm_def'].values, 1)
+	non_fit_fn = np.poly1d(non_fit)
+	ax.plot(np.append(non_df['length'], max_len), non_fit_fn(np.append(non_df['length'], max_len)),
+			linestyle='--', color='#429bf4')
+	print('Non Kelvin R2 of {}'.format(r2_score(non_df['norm_def'], non_fit_fn(non_df['length']))))
+
+	ax.scatter(kelv_df['length'], kelv_df['norm_def'], s=5,
+			   color='#f48342', label='Post Kelvin')
+	kelv_fit = np.polyfit(kelv_df['length'].values, kelv_df['norm_def'].values, 1)
+	kelv_fit_fn = np.poly1d(kelv_fit)
+	ax.plot(np.append(kelv_df['length'], max_len), kelv_fit_fn(np.append(kelv_df['length'], max_len)),
+			linestyle='--', color='#f48342')
+	print('Kelvin R2 of {}'.format(r2_score(kelv_df['norm_def'], kelv_fit_fn(kelv_df['length']))))
+
+	ax.set_xlabel('Length of Spike (Days)')
+	ax.set_ylabel('Deferment per Day (mcfd)')
+	plt.title('Comparing Deferment During Line Pressure Spikes')
+	plt.legend()
+	plt.tight_layout()
+
+	plt.savefig('figures/kelv_comp_normalized.png')
+
+
+if __name__ == '__main__':
+	# df = data_pull()
+	# df.to_csv('data/line_pressure.csv')
+	df = pd.read_csv('data/line_pressure.csv')
+	df = df.loc[(df['LinePressure'].notnull()) & (df['AllocatedGas'].notnull()), :]
+
+	flacs = pd.read_csv('data/kelvin_wellflacs.csv', header=None).values.flatten()
+	kelvin_df, non_kelvin_df = build_spike(flacs, df)
+
+	kelvin_df.to_csv('data/kelvin_spike.csv')
+	non_kelvin_df.to_csv('data/non_kelvin_spike.csv')
+	kelvin_df = pd.read_csv('data/kelvin_spike.csv')
+	non_kelvin_df = pd.read_csv('data/non_kelvin_spike.csv')
+
+	# neural_net(df)
+
 	# plot_corr(spike_df)
 	# rf_regressor(spike_df.loc[spike_df['3_spike'] == 1, :])
+
+	plot_spike(kelvin_df.loc[(kelvin_df['avg_spike_prod'].notnull()) &
+							 (kelvin_df['start_date'] >= pd.Timestamp(2018, 2, 1)), :],
+			   kelvin_df.loc[(kelvin_df['avg_spike_prod'].notnull()) &
+			   				 (kelvin_df['start_date'] < pd.Timestamp(2018, 2, 1)) &
+							 (kelvin_df['length'] < 100), :])
+
+	# plot_spike(spike_df.loc[(spike_df['avg_spike_prod'].notnull()) &
+	# 						(spike_df['start_date'] >= pd.Timestamp(2018, 2, 1)), :],
+	# 		   nonk_spike_df.loc[nonk_spike_df['avg_spike_prod'].notnull(), :])
