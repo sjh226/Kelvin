@@ -194,22 +194,37 @@ def anomaly(df):
 	df.loc[:, 'press_norm'] = normalize(df['LinePressure'].values.reshape(1, -1))[0]
 	df.loc[:, 'gas_norm'] = normalize(df['AllocatedGas'].values.reshape(1, -1))[0]
 
-	spike_df = pd.DataFrame(columns=['api', 'start_date', 'length', 'pre_prod',
+	spike_df = pd.DataFrame(columns=['api', 'start_date', 'def_length', 'pre_prod',
 									 'deferment', 'avg_spike_prod', 'daily_def',
-									 'norm_def'])
+									 'norm_def', 'spike_length'])
 	for idx, row in enumerate(df.iterrows()):
 		if idx != 0:
-			target_gas = df.iloc[idx-1]['AllocatedGas']
-			target_norm = df.iloc[idx-1]['gas_norm']
 			if row[1]['spike_start'] == 1:
+				target_press = df.iloc[idx-1]['LinePressure']
+				target_gas = df.iloc[idx-1]['AllocatedGas']
+				target_norm = df.iloc[idx-1]['gas_norm']
+
 				spike_gas = []
 				spike_norm = []
+
+				pressure_end = 0
+				gass_end = 0
+				press_spike = 0
 				for index, spike_row in enumerate(df.iloc[idx:].iterrows()):
-					if spike_row[1]['AllocatedGas'] >= target_gas:
-						break
-					else:
+					if spike_row[1]['AllocatedGas'] < target_gas and gass_end == 0:
 						spike_gas.append(spike_row[1]['AllocatedGas'])
 						spike_norm.append(spike_row[1]['gas_norm'])
+					else:
+						gass_end = 1
+
+					if spike_row[1]['LinePressure'] < target_press and pressure_end == 0:
+						press_spike += 1
+					else:
+						pressure_end = 1
+
+					if gass_end == 1 and pressure_end == 1:
+						break
+
 				deferment = sum(np.array(spike_gas) - target_gas)
 				def_norm = sum(np.array(spike_norm) - target_norm)
 
@@ -219,11 +234,12 @@ def anomaly(df):
 												     target_gas, abs(deferment),
 													 np.mean(spike_gas),
 													 np.mean(abs(deferment)),
-													 np.mean(abs(def_norm))]).reshape(1, -1),
-										   columns=['api', 'start_date', 'length',
+													 np.mean(abs(def_norm)),
+													 press_spike]).reshape(1, -1),
+										   columns=['api', 'start_date', 'def_length',
 													'pre_prod', 'deferment',
 													'avg_spike_prod', 'daily_def',
-													'norm_def']))
+													'norm_def', 'spike_length']))
 
 	# plot_linear(df, X_pred, upper, lower, df['API'].unique()[0])
 	# plot_it(df, X, X_1, X_gas, y_pred, df['API'].unique()[0])
@@ -362,8 +378,9 @@ def delta(df):
 
 	return return_df
 
-def build_spike(flacs, df):
+def build_spike(flacs, tower_wells, df):
 	kelvin_df = df.loc[df['WellFlac'].isin(flacs), :]
+	# non_kelvin_df = df.loc[df['API'].isin(tower_wells), :]
 	non_kelvin_df = df.loc[~df['WellFlac'].isin(flacs), :]
 
 	apis = sorted(kelvin_df['API'].unique())
@@ -383,41 +400,78 @@ def build_spike(flacs, df):
 		full_df = spike_df.append(api_df)
 		nonk_spike_df = nonk_spike_df.append(api_spike)
 
-	spike_df.loc[:, 'length'] = spike_df.loc[:, 'length'].astype(float)
+	spike_df.loc[:, 'def_length'] = spike_df.loc[:, 'def_length'].astype(float)
 	spike_df.loc[:, 'deferment'] = spike_df.loc[:, 'deferment'].astype(float)
 	spike_df.loc[:, 'daily_def'] = spike_df.loc[:, 'daily_def'].astype(float)
 	spike_df.loc[:, 'norm_def'] = spike_df.loc[:, 'norm_def'].astype(float)
 
-	nonk_spike_df.loc[:, 'length'] = nonk_spike_df.loc[:, 'length'].astype(float)
+	nonk_spike_df.loc[:, 'def_length'] = nonk_spike_df.loc[:, 'def_length'].astype(float)
 	nonk_spike_df.loc[:, 'deferment'] = nonk_spike_df.loc[:, 'deferment'].astype(float)
 	nonk_spike_df.loc[:, 'daily_def'] = nonk_spike_df.loc[:, 'daily_def'].astype(float)
 	nonk_spike_df.loc[:, 'norm_def'] = nonk_spike_df.loc[:, 'norm_def'].astype(float)
 
 	return spike_df, nonk_spike_df
 
-
 def plot_spike(kelv_df, non_df):
 	plt.close()
 
 	fig, ax = plt.subplots(1, 1, figsize=(5, 5))
 
-	max_len = np.max([non_df['length'].max(), kelv_df['length'].max()])
+	max_len = np.max([non_df['def_length'].max(), kelv_df['def_length'].max()])
 
-	ax.scatter(non_df['length'], non_df['norm_def'], s=5,
-			   color='#429bf4', label='Pre Kelvin')
-	non_fit = np.polyfit(non_df['length'].values, non_df['norm_def'].values, 1)
+	ax.scatter(non_df['def_length'][::10], non_df['norm_def'][::10], s=5,
+			   color='#429bf4', label='Non-Kelvin Wells')
+	non_fit = np.polyfit(non_df['def_length'].values, non_df['norm_def'].values, 1)
 	non_fit_fn = np.poly1d(non_fit)
-	ax.plot(np.append(non_df['length'], max_len), non_fit_fn(np.append(non_df['length'], max_len)),
-			linestyle='--', color='#429bf4')
-	print('Non Kelvin R2 of {}'.format(r2_score(non_df['norm_def'], non_fit_fn(non_df['length']))))
 
-	ax.scatter(kelv_df['length'], kelv_df['norm_def'], s=5,
-			   color='#f48342', label='Post Kelvin')
-	kelv_fit = np.polyfit(kelv_df['length'].values, kelv_df['norm_def'].values, 1)
+	# ax.plot(np.append(non_df['def_length'].values, max_len),
+	# 		non_fit_fn(np.append(non_df['def_length'].values, max_len)),
+	# 		linestyle='--', color='#429bf4', alpha=.5)
+	ax.plot([0, 20], [0, non_fit[0] * 20], linestyle='--', color='#429bf4', alpha=.5)
+	print('Non Kelvin R2 of {}'.format(r2_score(non_df['norm_def'], non_fit_fn(non_df['def_length']))))
+
+	ax.scatter(kelv_df['def_length'], kelv_df['norm_def'], s=5,
+			   color='#f48342', label='Kelvin Wells')
+	kelv_fit = np.polyfit(kelv_df['def_length'].values, kelv_df['norm_def'].values, 1)
 	kelv_fit_fn = np.poly1d(kelv_fit)
-	ax.plot(np.append(kelv_df['length'], max_len), kelv_fit_fn(np.append(kelv_df['length'], max_len)),
+	# ax.plot(np.append(kelv_df['def_length'], max_len), kelv_fit_fn(np.append(kelv_df['def_length'], max_len)),
+	# 		linestyle='--', color='#f48342', alpha=.5)
+	ax.plot([0, 20], [0, kelv_fit[0] * 20], linestyle='--', color='#f48342', alpha=.5)
+	print('Kelvin R2 of {}'.format(r2_score(kelv_df['norm_def'], kelv_fit_fn(kelv_df['def_length']))))
+	print(kelv_fit[0]/non_fit[0])
+
+	ax.set_xlabel('Length of Spike (Days)')
+	ax.set_ylabel('Normalized Deferment per Day')
+	ax.set_xlim(0, 20)
+	ax.set_ylim(0, 2)
+	plt.title('Comparing Deferment During Line Pressure Spikes')
+	plt.legend()
+	plt.tight_layout()
+
+	plt.savefig('figures/full_comparison_zoom.png')
+
+def plot_recovery(kelv_df, non_df):
+	plt.close()
+
+	fig, ax = plt.subplots(1, 1, figsize=(5, 5))
+
+	max_len = np.max([non_df['spike_length'].max(), kelv_df['spike_length'].max()])
+
+	ax.scatter(non_df['spike_length'], non_df['norm_def'], s=5,
+			   color='#429bf4', label='Pre Kelvin')
+	non_fit = np.polyfit(non_df['spike_length'].values, non_df['norm_def'].values, 1)
+	non_fit_fn = np.poly1d(non_fit)
+	ax.plot(np.append(non_df['spike_length'], max_len), non_fit_fn(np.append(non_df['spike_length'], max_len)),
+			linestyle='--', color='#429bf4')
+	print('Non Kelvin R2 of {}'.format(r2_score(non_df['norm_def'], non_fit_fn(non_df['spike_length']))))
+
+	ax.scatter(kelv_df['spike_length'], kelv_df['norm_def'], s=5,
+			   color='#f48342', label='Post Kelvin')
+	kelv_fit = np.polyfit(kelv_df['spike_length'].values, kelv_df['norm_def'].values, 1)
+	kelv_fit_fn = np.poly1d(kelv_fit)
+	ax.plot(np.append(kelv_df['spike_length'], max_len), kelv_fit_fn(np.append(kelv_df['spike_length'], max_len)),
 			linestyle='--', color='#f48342')
-	print('Kelvin R2 of {}'.format(r2_score(kelv_df['norm_def'], kelv_fit_fn(kelv_df['length']))))
+	print('Kelvin R2 of {}'.format(r2_score(kelv_df['norm_def'], kelv_fit_fn(kelv_df['spike_length']))))
 
 	ax.set_xlabel('Length of Spike (Days)')
 	ax.set_ylabel('Deferment per Day (mcfd)')
@@ -425,8 +479,7 @@ def plot_spike(kelv_df, non_df):
 	plt.legend()
 	plt.tight_layout()
 
-	plt.savefig('figures/kelv_comp_normalized.png')
-
+	plt.savefig('figures/kelvin_comp.png')
 
 if __name__ == '__main__':
 	# df = data_pull()
@@ -435,10 +488,11 @@ if __name__ == '__main__':
 	df = df.loc[(df['LinePressure'].notnull()) & (df['AllocatedGas'].notnull()), :]
 
 	flacs = pd.read_csv('data/kelvin_wellflacs.csv', header=None).values.flatten()
-	# kelvin_df, non_kelvin_df = build_spike(flacs, df)
-
-	kelvin_df.to_csv('data/kelvin_spike.csv')
-	non_kelvin_df.to_csv('data/non_kelvin_spike.csv')
+	tower_apis = pd.read_csv('data/tower_wells.csv')['API'].values.flatten()
+	# kelvin_df, non_kelvin_df = build_spike(flacs, tower_apis, df)
+	#
+	# kelvin_df.to_csv('data/kelvin_spike.csv')
+	# non_kelvin_df.to_csv('data/non_kelvin_spike.csv')
 	kelvin_df = pd.read_csv('data/kelvin_spike.csv')
 	non_kelvin_df = pd.read_csv('data/non_kelvin_spike.csv')
 
@@ -447,12 +501,12 @@ if __name__ == '__main__':
 	# plot_corr(spike_df)
 	# rf_regressor(spike_df.loc[spike_df['3_spike'] == 1, :])
 
-	plot_spike(kelvin_df.loc[(kelvin_df['avg_spike_prod'].notnull()) &
-							 (kelvin_df['start_date'] >= pd.Timestamp(2018, 2, 1)), :],
-			   kelvin_df.loc[(kelvin_df['avg_spike_prod'].notnull()) &
-			   				 (kelvin_df['start_date'] < pd.Timestamp(2018, 2, 1)) &
-							 (kelvin_df['length'] < 100), :])
+	# plot_spike(kelvin_df.loc[(kelvin_df['avg_spike_prod'].notnull()) &
+	# 						 (kelvin_df['start_date'] >= '2018-02-01'), :],
+	# 		   kelvin_df.loc[(kelvin_df['avg_spike_prod'].notnull()) &
+	# 		   				 (kelvin_df['start_date'] < '2018-02-01'), :])
 
 	plot_spike(kelvin_df.loc[(kelvin_df['avg_spike_prod'].notnull()) &
-							 (kelvin_df['start_date'] >= pd.Timestamp(2018, 2, 1)), :],
-			   non_kelvin_df.loc[non_kelvin_df['avg_spike_prod'].notnull(), :])
+							 (kelvin_df['start_date'] >= '2018-02-01'), :],
+			   non_kelvin_df.loc[(non_kelvin_df['avg_spike_prod'].notnull()) &
+			   					 (non_kelvin_df['def_length'] < 100), :])
